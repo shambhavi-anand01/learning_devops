@@ -21,4 +21,5 @@ A minimal FastAPI application exposing two HTTP endpoints:
    .venv\Scripts\activate
    # macOS/Linux
    source .venv/bin/activate
-  
+
+Test: trigger CI on test-ci-fix branch

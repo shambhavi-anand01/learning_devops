@@ -1,0 +1,128 @@
+name: Build & (conditionally) Push Docker Image
+
+on:
+  # This covers PR merge to main (which is a push to main)
+  push:
+    branches:
+      - main
+      - test-ci-fix           # <--- include any other test branches you want to validate build on
+      # - dev
+      # - feature/*
+  # Optional: allow manual trigger with an optional semver input
+  workflow_dispatch:
+    inputs:
+      semver:
+        description: 'Optional semantic version tag (e.g., 1.2.3). Will push even if not main.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # -------- CHANGE THIS to your actual Docker Hub repo --------
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/learning-devops
+
+  # If your Dockerfile lives in a subfolder (e.g., hello-fastapi-app),
+  # set DOCKER_CONTEXT to ./hello-fastapi-app and DOCKERFILE to ./hello-fastapi-app/Dockerfile
+  DOCKER_CONTEXT: .
+  DOCKERFILE: ./Dockerfile
+
+jobs:
+  docker:
+    name: Build & Conditional Push
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name:  Checkout
+        uses: actions/checkout@v4
+
+      - name:  Compute tags and decide push
+        id: meta
+        run: |
+          set -e
+          BRANCH="${GITHUB_REF##*/}"
+          SHA_TAG="${GITHUB_SHA::7}"
+
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "sha_tag=$SHA_TAG" >> $GITHUB_OUTPUT
+
+          # Push policy:
+          # - Always push on main (i.e., PR merged to main)
+          # - If manually triggered with a semver input, push too
+          if [[ "$BRANCH" == "main" || -n "${{ github.event.inputs.semver }}" ]]; then
+            echo "do_push=true" >> $GITHUB_OUTPUT
+          else
+            echo "do_push=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Tag policy:
+          # - Always include short SHA (for traceability)
+          # - Include 'latest' when branch is main
+          # - Include semver if provided by workflow_dispatch input
+          echo "latest_tag=$( [[ "$BRANCH" == "main" ]] && echo latest || echo )" >> $GITHUB_OUTPUT
+          echo "semver_tag=${{ github.event.inputs.semver }}" >> $GITHUB_OUTPUT
+
+      - name:  Docker login (only if we intend to push)
+        if: steps.meta.outputs.do_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name:  Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name:  Prepare tag args
+        id: tags
+        run: |
+          set -e
+          IMG="${{ env.DOCKER_IMAGE }}"
+          SHA="${{ steps.meta.outputs.sha_tag }}"
+          TAGS="-t $IMG:$SHA"
+
+          if [[ -n "${{ steps.meta.outputs.latest_tag }}" ]]; then
+            TAGS="$TAGS -t $IMG:${{ steps.meta.outputs.latest_tag }}"
+          fi
+          if [[ -n "${{ steps.meta.outputs.semver_tag }}" ]]; then
+            TAGS="$TAGS -t $IMG:${{ steps.meta.outputs.semver_tag }}"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "Using tags: $TAGS"
+
+      - name:  Build image
+        run: |
+          set -e
+          echo "Building with context=${{ env.DOCKER_CONTEXT }}, dockerfile=${{ env.DOCKERFILE }}"
+          docker build ${{ steps.tags.outputs.tags }} -f ${{ env.DOCKERFILE }} ${{ env.DOCKER_CONTEXT }}
+
+      - name:  Push image (only when allowed)
+        if: steps.meta.outputs.do_push == 'true'
+        run: |
+          set -e
+          IMG="${{ env.DOCKER_IMAGE }}"
+          echo "Pushing all produced tags for $IMG"
+          # Extract tags we built and push each one
+          for TAG in $(echo "${{ steps.tags.outputs.tags }}" | tr ' ' '\n' | grep -E "^-t" -A1 | grep -v "^-t"); do
+            echo "docker push $TAG"
+            docker push "$TAG"
+          done
+
+      - name:  Summary
+        if: always()
+        run: |
+          echo "Branch: ${{ steps.meta.outputs.branch }}"
+          echo "Image:  ${{ env.DOCKER_IMAGE }}"
+          echo "Tags:"
+          echo " - ${{ steps.meta.outputs.sha_tag }}"
+          if [[ -n "${{ steps.meta.outputs.latest_tag }}" ]]; then
+            echo " - ${{ steps.meta.outputs.latest_tag }}"
+          fi
+          if [[ -n "${{ steps.meta.outputs.semver_tag }}" ]]; then
+            echo " - ${{ steps.meta.outputs.semver_tag }}"
+          fi
+          echo "Will Push?: ${{ steps.meta.outputs.do_push }}"
+
