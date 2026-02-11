@@ -21,13 +21,9 @@ permissions:
   packages: write
 
 env:
-  # -------- CHANGE THIS to your actual Docker Hub repo --------
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/learning-devops
-
-  # If your Dockerfile lives in a subfolder (e.g., hello-fastapi-app),
-  # set DOCKER_CONTEXT to ./hello-fastapi-app and DOCKERFILE to ./hello-fastapi-app/Dockerfile
-  DOCKER_CONTEXT: .
-  DOCKERFILE: ./Dockerfile
+  BUILD_CONTEXT: ./hello-fastapi-app
+  DOCKERFILE_PATH: ./hello-fastapi-app/Dockerfile
 
 jobs:
   docker:
@@ -96,8 +92,9 @@ jobs:
       - name:  Build image
         run: |
           set -e
-          echo "Building with context=${{ env.DOCKER_CONTEXT }}, dockerfile=${{ env.DOCKERFILE }}"
-          docker build ${{ steps.tags.outputs.tags }} -f ${{ env.DOCKERFILE }} ${{ env.DOCKER_CONTEXT }}
+          unset DOCKER_CONTEXT || true
+          echo "Building with context=${{ env.BUILD_CONTEXT }}, dockerfile=${{ env.DOCKERFILE_PATH }}"
+          docker build ${{ steps.tags.outputs.tags }} -f ${{ env.DOCKERFILE_PATH }} ${{ env.BUILD_CONTEXT }}
 
       - name:  Push image (only when allowed)
         if: steps.meta.outputs.do_push == 'true'
